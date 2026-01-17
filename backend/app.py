@@ -2,7 +2,6 @@ import os
 import json
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.preprocessing import image
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
@@ -10,21 +9,29 @@ import io
 
 # --- 1. SETUP ---
 app = Flask(__name__)
-CORS(app)  # allow React frontend to access this API
+CORS(app)
 
-MODEL_SAVE_PATH = 'backend/final_tiny_model.tflite'
+MODEL_PATH = 'backend/final_tiny_model.tflite'
 CLASS_INDICES_PATH = 'backend/class_indices.json'
 TARGET_SIZE = (224, 224)
 
-# --- 2. LOAD MODEL & CLASS INDICES ---
+# --- 2. LOAD TFLITE INTERPRETER ---
 try:
-    model = tf.keras.models.load_model(MODEL_SAVE_PATH)
-    print(f"✅ Model loaded successfully from {MODEL_SAVE_PATH}")
+    # Initialize the TFLite interpreter
+    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+
+    # Get input and output details
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    
+    print(f"✅ TFLite Model loaded successfully from {MODEL_PATH}")
 except Exception as e:
-    print(f"❌ FATAL ERROR: Could not load model from {MODEL_SAVE_PATH}")
+    print(f"❌ FATAL ERROR: Could not load TFLite model from {MODEL_PATH}")
     print(e)
     exit(1)
 
+# Load Class Indices
 try:
     with open(CLASS_INDICES_PATH, 'r') as f:
         class_indices = json.load(f)
@@ -39,49 +46,40 @@ except Exception as e:
 @app.route('/analyze', methods=['POST'])
 def analyze_xray():
     if 'xray_image' not in request.files:
-        return jsonify({"error": "No image file provided. Key must be 'xray_image'."}), 400
+        return jsonify({"error": "No image file provided."}), 400
 
     file = request.files['xray_image']
-    if file.filename == '':
-        return jsonify({"error": "No file selected."}), 400
-
+    
     try:
-        # Convert uploaded file to PIL Image
-        img_bytes = file.read()
-        img = Image.open(io.BytesIO(img_bytes)).resize(TARGET_SIZE)
-        img = img.convert('RGB')
+        # Preprocess Image
+        img = Image.open(io.BytesIO(file.read())).convert('RGB').resize(TARGET_SIZE)
+        img_array = np.array(img, dtype=np.float32)
+        img_array = np.expand_dims(img_array, axis=0) / 255.0
 
-        # Convert to numpy array for model
-        img_array = image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0  # normalize
-
-        # Predict
-        prediction_probs = model.predict(img_array)[0]
-        predicted_index = int(np.argmax(prediction_probs))
+        # TFLite Inference Step
+        interpreter.set_tensor(input_details[0]['index'], img_array)
+        interpreter.invoke()
+        
+        # Get result
+        prediction_probs = interpreter.get_tensor(output_details[0]['index'])[0]
+        predicted_index = np.argmax(prediction_probs)
         predicted_label = class_names[predicted_index]
-        confidence = float(np.max(prediction_probs))
+        confidence = float(prediction_probs[predicted_index])
 
-        # --- Confidence threshold fix ---
-        # If the model says "COVID" but is not confident, assume "Normal"
+        # Confidence threshold logic
         if predicted_label == "COVID" and confidence < 0.85:
             predicted_label = "Normal"
 
-        # Prepare JSON response with all class probabilities
-        response = {
+        return jsonify({
             "prediction": predicted_label,
             "confidence": confidence,
             "all_probabilities": {
                 class_names[i]: float(prediction_probs[i]) for i in range(len(class_names))
             }
-        }
-
-        return jsonify(response)
+        })
 
     except Exception as e:
-        print(f"Prediction failed: {e}")
-        return jsonify({"error": f"Prediction failed due to server issue: {e}"}), 500
+        return jsonify({"error": f"Server Error: {str(e)}"}), 500
 
-
-# --- 4. RUN SERVER ---
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
