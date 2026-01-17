@@ -12,8 +12,8 @@ import io
 app = Flask(__name__)
 CORS(app)  # allow React frontend to access this API
 
-MODEL_SAVE_PATH = 'covid_classifier_model.h5'
-CLASS_INDICES_PATH = 'class_indices.json'
+MODEL_SAVE_PATH = 'backend/final_tiny_model.tflite'
+CLASS_INDICES_PATH = 'backend/class_indices.json'
 TARGET_SIZE = (224, 224)
 
 # --- 2. LOAD MODEL & CLASS INDICES ---
